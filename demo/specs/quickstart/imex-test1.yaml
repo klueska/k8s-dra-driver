@@ -1,0 +1,112 @@
+# One pod, 1 container
+# Run as deployment with 1 replica
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: imex-test1
+
+---
+apiVersion: resource.k8s.io/v1alpha3
+kind: ResourceClaim
+metadata:
+  namespace: imex-test1
+  name: shared-imex-channel-0
+spec:
+  devices:
+    requests:
+    - name: channel
+      deviceClassName: imex.nvidia.com
+
+---
+apiVersion: resource.k8s.io/v1alpha3
+kind: ResourceClaim
+metadata:
+  namespace: imex-test1
+  name: shared-imex-channel-1
+spec:
+  devices:
+    requests:
+    - name: channel
+      deviceClassName: imex.nvidia.com
+
+---
+apiVersion: resource.k8s.io/v1alpha3
+kind: ResourceClaimTemplate
+metadata:
+  namespace: imex-test1
+  name: all-gpus
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        deviceClassName: gpu.nvidia.com
+        allocationMode: All
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: imex-test1
+  name: pod-0
+  labels:
+    app: imex-test1-pod-0
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: pod-0
+  template:
+    metadata:
+      labels:
+        app: pod-0
+    spec:
+      containers:
+      - name: ctr
+        image: ubuntu:22.04
+        command: ["bash", "-c"]
+        args: ["trap 'exit 0' TERM; sleep 9999 & wait"]
+        resources:
+          claims:
+          - name: shared-imex-channel
+          - name: gpu
+      resourceClaims:
+      - name: shared-imex-channel
+        resourceClaimName: shared-imex-channel-0
+      - name: gpu
+        resourceClaimTemplateName: all-gpus
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: imex-test1
+  name: pod-1
+  labels:
+    app: imex-test1-pod-1
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: pod-1
+  template:
+    metadata:
+      labels:
+        app: pod-1
+    spec:
+      containers:
+      - name: ctr
+        image: ubuntu:22.04
+        command: ["bash", "-c"]
+        args: ["trap 'exit 0' TERM; sleep 9999 & wait"]
+        resources:
+          claims:
+          - name: shared-imex-channel
+          - name: gpu
+      resourceClaims:
+      - name: shared-imex-channel
+        resourceClaimName: shared-imex-channel-1
+      - name: gpu
+        resourceClaimTemplateName: all-gpus
