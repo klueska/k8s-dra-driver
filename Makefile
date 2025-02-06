@@ -107,12 +107,9 @@ generate-crds: generate-deepcopy .remove-crds
 			paths=$(CURDIR)/$${dir} \
 			output:crd:dir=$(CURDIR)/deployments/helm/tmp_crds; \
 	done
-	mkdir -p $(CURDIR)/deployments/helm/$(GPU_DRIVER_NAME)/crds
+	mkdir -p $(CURDIR)/deployments/helm/$(HELM_DRIVER_NAME)/crds
 	cp -R $(CURDIR)/deployments/helm/tmp_crds/* \
-		$(CURDIR)/deployments/helm/$(GPU_DRIVER_NAME)/crds
-	mkdir -p $(CURDIR)/deployments/helm/$(IMEX_DRIVER_NAME)/crds
-	cp -R $(CURDIR)/deployments/helm/tmp_crds/* \
-		$(CURDIR)/deployments/helm/$(IMEX_DRIVER_NAME)/crds
+		$(CURDIR)/deployments/helm/$(HELM_DRIVER_NAME)/crds
 	rm -rf $(CURDIR)/deployments/helm/tmp_crds
 
 
@@ -164,7 +161,7 @@ generate-clientset: .remove-clientset
 	rm -rf $(CURDIR)/pkg/tmp_clientset
 
 .remove-crds:
-	rm -rf $(CURDIR)/deployments/helm/$(DRIVER_NAME)/crds
+	rm -rf $(CURDIR)/deployments/helm/$(HELM_DRIVER_NAME)/crds
 
 .remove-deepcopy:
 	for dir in $(DEEPCOPY_SOURCES); do \
