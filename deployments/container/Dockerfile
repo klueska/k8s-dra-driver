@@ -64,7 +64,7 @@ LABEL org.opencontainers.image.source "https://github.com/NVIDIA/k8s-dra-driver"
 
 RUN mkdir /licenses && mv /NGC-DL-CONTAINER-LICENSE /licenses/NGC-DL-CONTAINER-LICENSE
 
-COPY --from=build /artifacts/nvidia-dra-imex-controller /usr/bin/nvidia-dra-imex-controller
-COPY --from=build /artifacts/nvidia-dra-imex-plugin     /usr/bin/nvidia-dra-imex-plugin
-COPY --from=build /artifacts/nvidia-dra-gpu-plugin      /usr/bin/nvidia-dra-gpu-plugin
-COPY --from=build /build/templates                      /templates
+COPY --from=build /artifacts/compute-domain-controller     /usr/bin/compute-domain-controller
+COPY --from=build /artifacts/compute-domain-kubelet-plugin /usr/bin/compute-domain-kubelet-plugin
+COPY --from=build /artifacts/gpu-kubelet-plugin            /usr/bin/gpu-kubelet-plugin
+COPY --from=build /build/templates                         /templates
