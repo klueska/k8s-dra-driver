@@ -214,7 +214,7 @@ func check(ctx context.Context, cancel context.CancelFunc, flags *Flags) error {
 	}
 
 	// Check if IMEX daemon is ready
-	cmd := exec.CommandContext(ctx, imexCtl, "-q", "-i", "127.0.0.1", "50005")
+	cmd := exec.CommandContext(ctx, imexCtl, "-q")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("error checking IMEX daemon status: %w", err)
