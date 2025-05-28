@@ -21,8 +21,12 @@ import (
 )
 
 const (
-	ComputeDomainStatusReady    = "Ready"
-	ComputeDomainStatusNotReady = "NotReady"
+	ComputeDomainStatusReady      = "Ready"
+	ComputeDomainStatusNotReady   = "NotReady"
+	ComputeDomainStatusDeprecated = "Deprecated"
+
+	ComputeDomainNodeStatusReady    = "Ready"
+	ComputeDomainNodeStatusNotReady = "NotReady"
 )
 
 // +genclient
@@ -70,9 +74,9 @@ type ComputeDomainResourceClaimTemplate struct {
 
 // ComputeDomainStatus provides the status for a ComputeDomain.
 type ComputeDomainStatus struct {
-	// +kubebuilder:validation:Enum=Ready;NotReady
-	// +kubebuilder:default=NotReady
-	Status string `json:"status"`
+	// +kubebuilder:validation:Enum=Ready;NotReady;Deprecated
+	// +kubebuilder:default=Deprecated
+	Status string `json:"status,omitempty"`
 	// +listType=map
 	// +listMapKey=name
 	Nodes []*ComputeDomainNode `json:"nodes,omitempty"`
@@ -83,4 +87,7 @@ type ComputeDomainNode struct {
 	Name      string `json:"name"`
 	IPAddress string `json:"ipAddress"`
 	CliqueID  string `json:"cliqueID"`
+	// +kubebuilder:validation:Enum=Ready;NotReady
+	// +kubebuilder:default=NotReady
+	Status string `json:"status,omitempty"`
 }
