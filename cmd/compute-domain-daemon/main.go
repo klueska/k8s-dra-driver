@@ -36,7 +36,12 @@ const (
 )
 
 type Flags struct {
-	cliqueID string
+	cliqueID               string
+	computeDomainUUID      string
+	computeDomainName      string
+	computeDomainNamespace string
+	nodeName               string
+	podIP                  string
 }
 
 func main() {
@@ -78,6 +83,37 @@ func newApp() *cli.App {
 				Usage:       "The clique ID for this node.",
 				EnvVars:     []string{"CLIQUE_ID"},
 				Destination: &flags.cliqueID,
+			},
+			&cli.StringFlag{
+				Name:        "compute-domain-uuid",
+				Usage:       "The UUID of the ComputeDomain to manage.",
+				EnvVars:     []string{"COMPUTE_DOMAIN_UUID"},
+				Destination: &flags.computeDomainUUID,
+			},
+			&cli.StringFlag{
+				Name:        "compute-domain-name",
+				Usage:       "The name of the ComputeDomain to manage.",
+				EnvVars:     []string{"COMPUTE_DOMAIN_NAME"},
+				Destination: &flags.computeDomainName,
+			},
+			&cli.StringFlag{
+				Name:        "compute-domain-namespace",
+				Usage:       "The namespace of the ComputeDomain to manage.",
+				Value:       "default",
+				EnvVars:     []string{"COMPUTE_DOMAIN_NAMESPACE"},
+				Destination: &flags.computeDomainNamespace,
+			},
+			&cli.StringFlag{
+				Name:        "node-name",
+				Usage:       "The name of this Kubernetes node.",
+				EnvVars:     []string{"NODE_NAME"},
+				Destination: &flags.nodeName,
+			},
+			&cli.StringFlag{
+				Name:        "pod-ip",
+				Usage:       "The IP address of this pod.",
+				EnvVars:     []string{"POD_IP"},
+				Destination: &flags.podIP,
 			},
 		},
 		Commands: []*cli.Command{

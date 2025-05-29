@@ -63,7 +63,7 @@ type ComputeDomainManager struct {
 
 type ComputeDomainDaemonSettings struct {
 	manager         *ComputeDomainManager
-	domain          string
+	computeDomain   *nvapi.ComputeDomain
 	rootDir         string
 	configPath      string
 	nodesConfigPath string
@@ -128,14 +128,24 @@ func (m *ComputeDomainManager) Stop() error {
 	return nil
 }
 
-func (m *ComputeDomainManager) NewSettings(domain string) *ComputeDomainDaemonSettings {
-	return &ComputeDomainDaemonSettings{
+func (m *ComputeDomainManager) NewSettings(ctx context.Context, domain string) (*ComputeDomainDaemonSettings, error) {
+	cd, err := m.GetComputeDomain(ctx, domain)
+	if err != nil {
+		return nil, fmt.Errorf("error getting compute domain: %w", err)
+	}
+	if cd == nil {
+		return nil, fmt.Errorf("compute domain not found: %s", domain)
+	}
+
+	settings := &ComputeDomainDaemonSettings{
 		manager:         m,
-		domain:          domain,
+		computeDomain:   cd,
 		rootDir:         fmt.Sprintf("%s/%s", m.configFilesRoot, domain),
 		configPath:      fmt.Sprintf("%s/%s/%s", m.configFilesRoot, domain, "config.cfg"),
 		nodesConfigPath: fmt.Sprintf("%s/%s/%s", m.configFilesRoot, domain, "nodes_config.cfg"),
 	}
+
+	return settings, nil
 }
 
 func (m *ComputeDomainManager) GetComputeDomainChannelContainerEdits(devRoot string, info *ComputeDomainChannelInfo) *cdiapi.ContainerEdits {
@@ -154,7 +164,7 @@ func (m *ComputeDomainManager) GetComputeDomainChannelContainerEdits(devRoot str
 }
 
 func (s *ComputeDomainDaemonSettings) GetDomain() string {
-	return s.domain
+	return string(s.computeDomain.UID)
 }
 
 func (s *ComputeDomainDaemonSettings) GetCDIContainerEdits(devRoot string, info *nvcapDeviceInfo) *cdiapi.ContainerEdits {
@@ -162,6 +172,9 @@ func (s *ComputeDomainDaemonSettings) GetCDIContainerEdits(devRoot string, info 
 		ContainerEdits: &cdispec.ContainerEdits{
 			Env: []string{
 				fmt.Sprintf("CLIQUE_ID=%s", s.manager.cliqueID),
+				fmt.Sprintf("COMPUTE_DOMAIN_UUID=%s", s.computeDomain.UID),
+				fmt.Sprintf("COMPUTE_DOMAIN_NAME=%s", s.computeDomain.Name),
+				fmt.Sprintf("COMPUTE_DOMAIN_NAMESPACE=%s", s.computeDomain.Namespace),
 			},
 			Mounts: []*cdispec.Mount{
 				{
@@ -224,7 +237,7 @@ func (s *ComputeDomainDaemonSettings) WriteConfigFile(ctx context.Context) error
 }
 
 func (s *ComputeDomainDaemonSettings) WriteNodesConfigFile(ctx context.Context) error {
-	nodeIPs, err := s.manager.GetNodeIPs(ctx, s.domain)
+	nodeIPs, err := s.manager.GetNodeIPs(ctx, string(s.computeDomain.UID))
 	if err != nil {
 		return fmt.Errorf("error getting node IPs: %w", err)
 	}

@@ -319,7 +319,11 @@ func (s *DeviceState) unprepareDevices(ctx context.Context, cs *resourceapi.Reso
 			}
 		case *configapi.ComputeDomainDaemonConfig:
 			// If a daemon type, unprepare the new ComputeDomain daemon.
-			computeDomainDaemonSettings := s.computeDomainManager.NewSettings(config.DomainID)
+			computeDomainDaemonSettings, err := s.computeDomainManager.NewSettings(ctx, config.DomainID)
+			if err != nil {
+				return fmt.Errorf("error creating compute domain daemon settings: %w", err)
+			}
+
 			if err := computeDomainDaemonSettings.Unprepare(ctx); err != nil {
 				return fmt.Errorf("error unpreparing ComputeDomain daemon settings: %w", err)
 			}
@@ -412,7 +416,10 @@ func (s *DeviceState) applyComputeDomainDaemonConfig(ctx context.Context, config
 		}
 
 		// Create new ComputeDomain daemon settings from the ComputeDomainManager.
-		computeDomainDaemonSettings := s.computeDomainManager.NewSettings(config.DomainID)
+		computeDomainDaemonSettings, err := s.computeDomainManager.NewSettings(ctx, config.DomainID)
+		if err != nil {
+			return nil, fmt.Errorf("error creating compute domain daemon settings: %w", err)
+		}
 
 		// Prepare the new ComputeDomain daemon.
 		if err := computeDomainDaemonSettings.Prepare(ctx); err != nil {
