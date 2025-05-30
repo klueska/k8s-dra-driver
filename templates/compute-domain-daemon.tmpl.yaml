@@ -17,9 +17,24 @@ spec:
       labels:
         {{ .ComputeDomainLabelKey }}: {{ .ComputeDomainLabelValue }}
     spec:
-      hostNetwork: true
+      serviceAccountName: nvidia-dra-driver-gpu-service-account
       nodeSelector:
         {{ .ComputeDomainLabelKey }}: {{ .ComputeDomainLabelValue }}
+#      dnsPolicy: None
+#      dnsConfig:
+#        nameservers:
+#          - 127.0.0.1
+#      initContainers:
+#      - name: init-hosts
+#        image: {{ .ImageName }}
+#        command: ["sh", "-c"]
+#        args:
+#        - |
+#          echo "127.0.0.1 localhost" > /hosts-path/hosts
+#          echo "::1 localhost" >> /hosts-path/hosts
+#        volumeMounts:
+#          - name: hosts-path
+#            mountPath: /hosts-path
       containers:
       # Run the compute domain daemon
       - name: compute-domain-daemon
@@ -47,6 +62,51 @@ spec:
             command: ["compute-domain-daemon", "check"]
           initialDelaySeconds: 10
           periodSeconds: 5
+#        volumeMounts:
+#          - name: hosts-path
+#            mountPath: /etc/hosts
+#            subPath: hosts
+      # Run a local DNS server to map IMEX daemon IPs to local DNS names
+      # - name: dnsmasq
+      #   image: {{ .ImageName }}
+      #   env:
+      #     - name: POD_IP
+      #       valueFrom:
+      #         fieldRef:
+      #           fieldPath: status.podIP
+      #   command: [sh, -c]
+      #   args:
+      #   - |-
+      #     # Write dnsmasq config file
+      #     echo "server=8.8.8.8" > /etc/dnsmasq.conf
+      #     echo "server=8.8.4.4" >> /etc/dnsmasq.conf
+      #     echo "no-resolv" >> /etc/dnsmasq.conf
+      #     echo "no-poll" >> /etc/dnsmasq.conf
+      #     echo "no-negcache" >> /etc/dnsmasq.conf
+      #     echo "listen-address=127.0.0.1" >> /etc/dnsmasq.conf
+      #     # Add entry to /etc/hosts using pod's IP
+      #     echo "${POD_IP} pod.local" >> /etc/hosts
+      #     dnsmasq -d
+      #   startupProbe:
+      #     exec:
+      #       command:
+      #       - sh
+      #       - -c
+      #       - "nslookup -type=A pod.local"
+      #   initialDelaySeconds: 1
+      #   periodSeconds: 1
+      #   livenessProbe:
+      #     exec:
+      #       command:
+      #       - sh
+      #       - -c
+      #       - "nslookup -type=A pod.local"
+      #   initialDelaySeconds: 10
+      #   periodSeconds: 5
+      #   volumeMounts:
+      #     - name: hosts-path
+      #       mountPath: /etc/hosts
+      #       subPath: hosts
       # Repel all node taints.
       # See https://github.com/NVIDIA/k8s-dra-driver-gpu/issues/305
       tolerations:
@@ -56,6 +116,9 @@ spec:
           effect: "NoExecute"
         - operator: "Exists"
           effect: "PreferNoSchedule"
+#      volumes:
+#        - name: hosts-path
+#          emptyDir: {}
       resourceClaims:
       - name: compute-domain-daemon
         resourceClaimTemplateName: {{ .ResourceClaimTemplateName }}

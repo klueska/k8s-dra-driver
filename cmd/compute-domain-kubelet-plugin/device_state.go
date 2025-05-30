@@ -319,11 +319,7 @@ func (s *DeviceState) unprepareDevices(ctx context.Context, cs *resourceapi.Reso
 			}
 		case *configapi.ComputeDomainDaemonConfig:
 			// If a daemon type, unprepare the new ComputeDomain daemon.
-			computeDomainDaemonSettings, err := s.computeDomainManager.NewSettings(ctx, config.DomainID)
-			if err != nil {
-				return fmt.Errorf("error creating compute domain daemon settings: %w", err)
-			}
-
+			computeDomainDaemonSettings := s.computeDomainManager.NewSettings(ctx, config.DomainID)
 			if err := computeDomainDaemonSettings.Unprepare(ctx); err != nil {
 				return fmt.Errorf("error unpreparing ComputeDomain daemon settings: %w", err)
 			}
@@ -391,11 +387,6 @@ func (s *DeviceState) applyComputeDomainDaemonConfig(ctx context.Context, config
 		return nil, fmt.Errorf("only expected 1 device for requests '%v' in claim '%v'", requests, claim.UID)
 	}
 
-	// Add info about this node to the ComputeDomain status.
-	if err := s.computeDomainManager.AddNodeStatusToComputeDomain(ctx, config.DomainID); err != nil {
-		return nil, fmt.Errorf("error adding node status to ComputeDomain: %w", err)
-	}
-
 	// Declare a device group state object to populate.
 	configState := DeviceConfigState{
 		Type:          ComputeDomainDaemonType,
@@ -416,10 +407,7 @@ func (s *DeviceState) applyComputeDomainDaemonConfig(ctx context.Context, config
 		}
 
 		// Create new ComputeDomain daemon settings from the ComputeDomainManager.
-		computeDomainDaemonSettings, err := s.computeDomainManager.NewSettings(ctx, config.DomainID)
-		if err != nil {
-			return nil, fmt.Errorf("error creating compute domain daemon settings: %w", err)
-		}
+		computeDomainDaemonSettings := s.computeDomainManager.NewSettings(ctx, config.DomainID)
 
 		// Prepare the new ComputeDomain daemon.
 		if err := computeDomainDaemonSettings.Prepare(ctx); err != nil {
@@ -427,7 +415,11 @@ func (s *DeviceState) applyComputeDomainDaemonConfig(ctx context.Context, config
 		}
 
 		// Store information about the ComputeDomain daemon in the configState.
-		configState.containerEdits = configState.containerEdits.Append(computeDomainDaemonSettings.GetCDIContainerEdits(s.cdi.devRoot, nvcapDeviceInfo))
+		edits, err := computeDomainDaemonSettings.GetCDIContainerEdits(s.cdi.devRoot, nvcapDeviceInfo)
+		if err != nil {
+			return nil, fmt.Errorf("error getting container edits for ComputeDomain daemon for requests '%v' in claim '%v': %w", requests, claim.UID, err)
+		}
+		configState.containerEdits = configState.containerEdits.Append(edits)
 	}
 
 	return &configState, nil

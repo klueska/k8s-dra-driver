@@ -91,3 +91,18 @@ type ComputeDomainNode struct {
 	// +kubebuilder:default=NotReady
 	Status string `json:"status,omitempty"`
 }
+
+type NVLinkDomain struct {
+	UUID       string
+	Partitions []NVLinkDomainPartition
+}
+
+type NVLinkDomainPartition struct {
+	CliqueID string
+	Channels []IMEXChannel
+}
+
+type IMEXChannel struct {
+	ID                int
+	ComputeDomainUUID string
+}

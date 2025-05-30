@@ -22,12 +22,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"text/template"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -63,7 +61,7 @@ type ComputeDomainManager struct {
 
 type ComputeDomainDaemonSettings struct {
 	manager         *ComputeDomainManager
-	computeDomain   *nvapi.ComputeDomain
+	domain          string
 	rootDir         string
 	configPath      string
 	nodesConfigPath string
@@ -128,24 +126,14 @@ func (m *ComputeDomainManager) Stop() error {
 	return nil
 }
 
-func (m *ComputeDomainManager) NewSettings(ctx context.Context, domain string) (*ComputeDomainDaemonSettings, error) {
-	cd, err := m.GetComputeDomain(ctx, domain)
-	if err != nil {
-		return nil, fmt.Errorf("error getting compute domain: %w", err)
-	}
-	if cd == nil {
-		return nil, fmt.Errorf("compute domain not found: %s", domain)
-	}
-
-	settings := &ComputeDomainDaemonSettings{
+func (m *ComputeDomainManager) NewSettings(ctx context.Context, domain string) *ComputeDomainDaemonSettings {
+	return &ComputeDomainDaemonSettings{
 		manager:         m,
-		computeDomain:   cd,
+		domain:          domain,
 		rootDir:         fmt.Sprintf("%s/%s", m.configFilesRoot, domain),
 		configPath:      fmt.Sprintf("%s/%s/%s", m.configFilesRoot, domain, "config.cfg"),
 		nodesConfigPath: fmt.Sprintf("%s/%s/%s", m.configFilesRoot, domain, "nodes_config.cfg"),
 	}
-
-	return settings, nil
 }
 
 func (m *ComputeDomainManager) GetComputeDomainChannelContainerEdits(devRoot string, info *ComputeDomainChannelInfo) *cdiapi.ContainerEdits {
@@ -164,17 +152,25 @@ func (m *ComputeDomainManager) GetComputeDomainChannelContainerEdits(devRoot str
 }
 
 func (s *ComputeDomainDaemonSettings) GetDomain() string {
-	return string(s.computeDomain.UID)
+	return s.domain
 }
 
-func (s *ComputeDomainDaemonSettings) GetCDIContainerEdits(devRoot string, info *nvcapDeviceInfo) *cdiapi.ContainerEdits {
-	return &cdiapi.ContainerEdits{
+func (s *ComputeDomainDaemonSettings) GetCDIContainerEdits(devRoot string, info *nvcapDeviceInfo) (*cdiapi.ContainerEdits, error) {
+	cd, err := s.manager.GetComputeDomain(context.Background(), s.domain)
+	if err != nil {
+		return nil, fmt.Errorf("error getting compute domain: %w", err)
+	}
+	if cd == nil {
+		return nil, fmt.Errorf("compute domain not found: %s", s.domain)
+	}
+
+	edits := &cdiapi.ContainerEdits{
 		ContainerEdits: &cdispec.ContainerEdits{
 			Env: []string{
 				fmt.Sprintf("CLIQUE_ID=%s", s.manager.cliqueID),
-				fmt.Sprintf("COMPUTE_DOMAIN_UUID=%s", s.computeDomain.UID),
-				fmt.Sprintf("COMPUTE_DOMAIN_NAME=%s", s.computeDomain.Name),
-				fmt.Sprintf("COMPUTE_DOMAIN_NAMESPACE=%s", s.computeDomain.Namespace),
+				fmt.Sprintf("COMPUTE_DOMAIN_UUID=%s", cd.UID),
+				fmt.Sprintf("COMPUTE_DOMAIN_NAME=%s", cd.Name),
+				fmt.Sprintf("COMPUTE_DOMAIN_NAMESPACE=%s", cd.Namespace),
 			},
 			Mounts: []*cdispec.Mount{
 				{
@@ -191,6 +187,8 @@ func (s *ComputeDomainDaemonSettings) GetCDIContainerEdits(devRoot string, info 
 			},
 		},
 	}
+
+	return edits, nil
 }
 
 func (s *ComputeDomainDaemonSettings) Prepare(ctx context.Context) error {
@@ -200,10 +198,6 @@ func (s *ComputeDomainDaemonSettings) Prepare(ctx context.Context) error {
 
 	if err := s.WriteConfigFile(ctx); err != nil {
 		return fmt.Errorf("error writing config file %v: %w", s.configPath, err)
-	}
-
-	if err := s.WriteNodesConfigFile(ctx); err != nil {
-		return fmt.Errorf("error writing nodes config file %v: %w", s.nodesConfigPath, err)
 	}
 
 	return nil
@@ -236,24 +230,6 @@ func (s *ComputeDomainDaemonSettings) WriteConfigFile(ctx context.Context) error
 	return nil
 }
 
-func (s *ComputeDomainDaemonSettings) WriteNodesConfigFile(ctx context.Context) error {
-	nodeIPs, err := s.manager.GetNodeIPs(ctx, string(s.computeDomain.UID))
-	if err != nil {
-		return fmt.Errorf("error getting node IPs: %w", err)
-	}
-
-	var nodesConfigFile bytes.Buffer
-	for _, ip := range nodeIPs {
-		nodesConfigFile.WriteString(fmt.Sprintf("%s\n", ip))
-	}
-
-	if err := os.WriteFile(s.nodesConfigPath, nodesConfigFile.Bytes(), 0644); err != nil {
-		return fmt.Errorf("error writing config file %v: %w", s.configPath, err)
-	}
-
-	return nil
-}
-
 func (m *ComputeDomainManager) AssertComputeDomainReady(ctx context.Context, cdUID string) error {
 	cd, err := m.GetComputeDomain(ctx, cdUID)
 	if err != nil {
@@ -268,92 +244,6 @@ func (m *ComputeDomainManager) AssertComputeDomainReady(ctx context.Context, cdU
 	}
 
 	return nil
-}
-
-func (m *ComputeDomainManager) AddNodeStatusToComputeDomain(ctx context.Context, cdUID string) error {
-	cd, err := m.GetComputeDomain(ctx, cdUID)
-	if err != nil {
-		return fmt.Errorf("error getting ComputeDomain: %w", err)
-	}
-	if cd == nil {
-		return fmt.Errorf("ComputeDomain not found: %s", cdUID)
-	}
-
-	if cd.Status.Status == nvapi.ComputeDomainStatusReady {
-		return nil
-	}
-
-	var nodeNames []string
-	for _, node := range cd.Status.Nodes {
-		nodeNames = append(nodeNames, node.Name)
-	}
-
-	if slices.Contains(nodeNames, m.config.flags.nodeName) {
-		return nil
-	}
-
-	node, err := m.GetComputeDomainNodeStatusInfo(ctx, m.config.flags.nodeName)
-	if err != nil {
-		return fmt.Errorf("error getting ComputeDomain node status info: %w", err)
-	}
-
-	newCD := cd.DeepCopy()
-	newCD.Status.Nodes = append(newCD.Status.Nodes, node)
-	newCD.Status.Status = nvapi.ComputeDomainStatusNotReady
-	if _, err = m.config.clientsets.Nvidia.ResourceV1beta1().ComputeDomains(newCD.Namespace).UpdateStatus(ctx, newCD, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("error updating nodes in ComputeDomain status: %w", err)
-	}
-
-	return nil
-}
-
-func (m *ComputeDomainManager) GetComputeDomainNodeStatusInfo(ctx context.Context, nodeName string) (*nvapi.ComputeDomainNode, error) {
-	node, err := m.config.clientsets.Core.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("error getting Node '%s': %w", nodeName, err)
-	}
-
-	var ipAddress string
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == corev1.NodeInternalIP {
-			ipAddress = addr.Address
-			break
-		}
-	}
-
-	n := &nvapi.ComputeDomainNode{
-		Name:      nodeName,
-		IPAddress: ipAddress,
-		CliqueID:  m.cliqueID,
-	}
-
-	return n, nil
-}
-
-func (m *ComputeDomainManager) GetNodeIPs(ctx context.Context, cdUID string) ([]string, error) {
-	cd, err := m.GetComputeDomain(ctx, cdUID)
-	if err != nil {
-		return nil, fmt.Errorf("error getting ComputeDomain: %w", err)
-	}
-	if cd == nil {
-		return nil, fmt.Errorf("ComputeDomain not found: %s", cdUID)
-	}
-
-	if cd.Status.Nodes == nil {
-		return nil, fmt.Errorf("no nodes set for ComputeDomain")
-	}
-
-	if len(cd.Status.Nodes) != cd.Spec.NumNodes {
-		return nil, fmt.Errorf("not all nodes populated in ComputeDomain status yet")
-	}
-
-	var ips []string
-	for _, node := range cd.Status.Nodes {
-		if m.cliqueID == node.CliqueID {
-			ips = append(ips, node.IPAddress)
-		}
-	}
-	return ips, nil
 }
 
 func (m *ComputeDomainManager) AssertComputeDomainNamespace(ctx context.Context, claimNamespace, cdUID string) error {

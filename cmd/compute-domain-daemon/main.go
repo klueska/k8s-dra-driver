@@ -22,8 +22,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
+	nvapi "github.com/NVIDIA/k8s-dra-driver-gpu/api/nvidia.com/resource/v1beta1"
 	"github.com/urfave/cli/v2"
 )
 
@@ -56,7 +58,7 @@ func newApp() *cli.App {
 	var flags Flags
 
 	// Create a wrapper that will be used to gracefully shut down all subcommands
-	wrapper := func(ctx context.Context, f func(ctx context.Context, flags *Flags) error) error {
+	wrapper := func(ctx context.Context, f func(ctx context.Context, cancel context.CancelFunc, flags *Flags) error) error {
 		// Create a cancelable context from the one passed in
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -70,7 +72,7 @@ func newApp() *cli.App {
 		}()
 
 		// Call the wrapped function
-		return f(ctx, &flags)
+		return f(ctx, cancel, &flags)
 	}
 
 	// Create the app
@@ -139,13 +141,48 @@ func newApp() *cli.App {
 
 // run runs the compute domain daemon, checking IMEX capability and managing the IMEX daemon lifecycle.
 // It returns an error if any step fails.
-func run(ctx context.Context, flags *Flags) error {
+func run(ctx context.Context, cancel context.CancelFunc, flags *Flags) error {
+	// Create controller config
+	config := &ControllerConfig{
+		cliqueID:               flags.cliqueID,
+		computeDomainUUID:      flags.computeDomainUUID,
+		computeDomainName:      flags.computeDomainName,
+		computeDomainNamespace: flags.computeDomainNamespace,
+		nodeName:               flags.nodeName,
+		podIP:                  flags.podIP,
+	}
+
+	// Create and start controller to watch for compute domain updates and keep
+	// the IPs mapped in the nodes config file in sync
+	controller, err := NewController(config)
+	if err != nil {
+		return fmt.Errorf("error creating controller: %w", err)
+	}
+
+	// Start controller in a goroutine
+	errChan := make(chan error, 1)
+	go func() {
+		err := controller.Run(ctx)
+		if err != nil {
+			cancel()
+		}
+		errChan <- err
+	}()
+
+	// Wait until all nodes have joined the compute domain
+	nodes := controller.BlockUntilAllNodesJoinComputeDomain()
+
 	if flags.cliqueID == "" {
 		fmt.Println("ClusterUUID and CliqueId are NOT set for GPUs on this node.")
 		fmt.Println("The IMEX daemon will not be started.")
 		fmt.Println("Sleeping forever...")
 		<-ctx.Done()
 		return nil
+	}
+
+	// Create nodes config file
+	if err := createNodesConfig(ctx, flags.cliqueID, nodes); err != nil {
+		return fmt.Errorf("error creating nodes config: %w", err)
 	}
 
 	// Print nodes config
@@ -163,12 +200,13 @@ func run(ctx context.Context, flags *Flags) error {
 		return fmt.Errorf("error tailing log file: %w", err)
 	}
 
-	return nil
+	// Wait for controller to finish
+	return <-errChan
 }
 
 // check verifies if the node is IMEX capable and if so, checks if the IMEX daemon is ready.
 // It returns an error if any step fails.
-func check(ctx context.Context, flags *Flags) error {
+func check(ctx context.Context, cancel context.CancelFunc, flags *Flags) error {
 	if flags.cliqueID == "" {
 		fmt.Println("ClusterUUID and CliqueId are NOT set for GPUs on this node.")
 		return nil
@@ -183,6 +221,33 @@ func check(ctx context.Context, flags *Flags) error {
 
 	if string(output) != "READY\n" {
 		return fmt.Errorf("IMEX daemon not ready: %s", string(output))
+	}
+
+	return nil
+}
+
+// createNodesConfig creates a nodesConfig file with IPs for nodes in the same clique
+func createNodesConfig(ctx context.Context, cliqueID string, nodes []*nvapi.ComputeDomainNode) error {
+	// Ensure the directory exists
+	dir := filepath.Dir(nodesConfig)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Create or overwrite the nodesConfig file
+	f, err := os.Create(nodesConfig)
+	if err != nil {
+		return fmt.Errorf("failed to read nodes config: %w", err)
+	}
+	defer f.Close()
+
+	// Write IPs for nodes in the same clique
+	for _, node := range nodes {
+		if node.CliqueID == cliqueID {
+			if _, err := fmt.Fprintf(f, "%s\n", node.IPAddress); err != nil {
+				return fmt.Errorf("failed to write to nodesConfig file: %w", err)
+			}
+		}
 	}
 
 	return nil
