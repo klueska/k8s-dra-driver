@@ -17,7 +17,7 @@ spec:
       labels:
         {{ .ComputeDomainLabelKey }}: {{ .ComputeDomainLabelValue }}
     spec:
-      hostNetwork: true
+      serviceAccountName: compute-domain-daemon-service-account
       nodeSelector:
         {{ .ComputeDomainLabelKey }}: {{ .ComputeDomainLabelValue }}
       containers:

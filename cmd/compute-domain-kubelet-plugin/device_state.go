@@ -387,11 +387,6 @@ func (s *DeviceState) applyComputeDomainDaemonConfig(ctx context.Context, config
 		return nil, fmt.Errorf("only expected 1 device for requests '%v' in claim '%v'", requests, claim.UID)
 	}
 
-	// Add info about this node to the ComputeDomain status.
-	if err := s.computeDomainManager.AddNodeStatusToComputeDomain(ctx, config.DomainID); err != nil {
-		return nil, fmt.Errorf("error adding node status to ComputeDomain: %w", err)
-	}
-
 	// Declare a device group state object to populate.
 	configState := DeviceConfigState{
 		Type:          ComputeDomainDaemonType,
