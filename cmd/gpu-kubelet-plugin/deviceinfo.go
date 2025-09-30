@@ -88,9 +88,6 @@ func (d *GpuInfo) GetDevice() resourceapi.Device {
 			"uuid": {
 				StringValue: &d.UUID,
 			},
-			"minor": {
-				IntValue: ptr.To(int64(d.minor)),
-			},
 			"productName": {
 				StringValue: &d.productName,
 			},
