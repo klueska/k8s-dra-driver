@@ -80,7 +80,7 @@ func NewComputeDomainManager(config *ManagerConfig) *ComputeDomainManager {
 		informer: informer,
 	}
 
-	m.daemonSetManager = NewMultiNamespaceDaemonSetManager(config, m.Get)
+	m.daemonSetManager = NewMultiNamespaceDaemonSetManager(config, m.Get, m.UpdateStatus)
 	m.resourceClaimTemplateManager = NewWorkloadResourceClaimTemplateManager(config, m.Get)
 	m.nodeManager = NewNodeManager(config, m.Get)
 
