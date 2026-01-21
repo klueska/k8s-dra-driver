@@ -281,6 +281,8 @@ _log_ts_no_newline() {
 }
 
 
+# For measuring duration with sub-second precision.
+export _T0=$(awk '{print $1}' /proc/uptime)
 log() {
   _TNOW=$(awk '{print $1}' /proc/uptime)
   _DUR=$(echo "$_TNOW - $_T0" | bc)

@@ -18,12 +18,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -198,14 +200,38 @@ func (pm *PodManager) updateNodeStatus(ctx context.Context, status string) error
 	// Update the node status to the new value
 	node.Status = status
 
-	// Update the CD status. Store the CD object returned by the API server in
-	// the mutationCache (it now has a newer ResourceVersion than `newCD` and
-	// hence any further mutations should be performed based on that).
-	newCD, err = pm.config.clientsets.Nvidia.ResourceV1beta1().ComputeDomains(newCD.Namespace).UpdateStatus(ctx, newCD, metav1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("error updating node status in ComputeDomain: %w", err)
+	// Use server-side apply (SSA) for mutating the ComputeDomainNode object in
+	// the CD's `status.nodes` list.
+	patch := map[string]interface{}{
+		"apiVersion": "resource.nvidia.com/v1beta1",
+		"kind":       "ComputeDomain",
+		"status": map[string]interface{}{
+			"nodes": []*nvapi.ComputeDomainNode{node},
+		},
 	}
-	pm.computeDomainMutationCache.Mutation(newCD)
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("could not serialize patch: %w", err)
+	}
+
+	updatedCD, err := pm.config.clientsets.Nvidia.ResourceV1beta1().ComputeDomains(cd.Namespace).Patch(
+		ctx,
+		cd.Name,
+		types.ApplyPatchType,
+		patchBytes,
+		metav1.PatchOptions{
+			FieldManager: fmt.Sprintf("cd-writer-%s", pm.config.nodeName),
+		},
+		"status",
+	)
+	if err != nil {
+		return fmt.Errorf("error patching ComputeDomain status: %w", err)
+	}
+
+	// Store the CD object returned by the API server in the mutationCache (it
+	// now has a newer ResourceVersion than `newCD` and hence any further
+	// mutations should be performed based on that).
+	pm.computeDomainMutationCache.Mutation(updatedCD)
 
 	klog.Infof("Successfully updated node status in CD (new nodeinfo: %v)", node)
 	return nil

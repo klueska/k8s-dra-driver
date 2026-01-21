@@ -18,12 +18,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
@@ -274,6 +276,9 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 		}
 
 		klog.Infof("CD status does not contain node name '%s' yet, try to insert myself: %v", m.config.nodeName, nodeInfo)
+
+		// This mutation is not used for patching the object, but in the
+		// deferred `MaybePushNodesUpdate()` to update the IMEX daemon config.
 		newCD.Status.Nodes = append(newCD.Status.Nodes, nodeInfo)
 	}
 
@@ -282,19 +287,32 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 	// across pod restarts.
 	nodeInfo.IPAddress = m.config.podIP
 
-	// Conditionally update global CD status if it's still in its initial status
-	if newCD.Status.Status == "" {
-		newCD.Status.Status = nvapi.ComputeDomainStatusNotReady
-	}
+	// TODO: figure out from where to update the global status Maybe do this in
+	// the controller instead? Or maybe do not do this anymore?
+	// newCD.Status.Status == "" {
+	//  newCD.Status.Status = nvapi.ComputeDomainStatusNotReady
+	// }
 
-	// Update status and (upon success) store the latest version of the object
-	// (as returned by the API server) in the mutation cache.
-	newCD, err := m.config.clientsets.Nvidia.ResourceV1beta1().ComputeDomains(newCD.Namespace).UpdateStatus(ctx, newCD, metav1.UpdateOptions{})
+	// Use server-side apply (SSA) to perform insertion or update, with a
+	// localized patch affecting just one `ComputeDomainNode` item in the
+	// `status.nodes` list. See
+	// https://github.com/NVIDIA/k8s-dra-driver-gpu/issues/821 for context.
+	// Note:
+	// - The `Patch()` method requires the patch itself to be provided as
+	//   byte sequence (as JSON document).
+	// - The `apiVersion` and `kind`` fields are required in the patch payload.
+	patchBytes, err := generatePatchForNodeInfo([]*nvapi.ComputeDomainNode{nodeInfo})
 	if err != nil {
-		return fmt.Errorf("error updating ComputeDomain status: %w", err)
+		return fmt.Errorf("could not serialize patch: %w", err)
 	}
-	m.mutationCache.Mutation(newCD)
 
+	updatedCD, err := m.patchCD(ctx, patchBytes)
+	if err != nil {
+		return fmt.Errorf("error patching ComputeDomain status: %w", err)
+	}
+
+	// Store the latest version of the object as returned by the API server in the mutation cache.
+	m.mutationCache.Mutation(updatedCD)
 	klog.Infof("Successfully inserted/updated node in CD (nodeinfo: %v)", nodeInfo)
 	return nil
 }
@@ -390,46 +408,65 @@ func (m *ComputeDomainManager) GetNodesUpdateChan() chan []*nvapi.ComputeDomainN
 
 // removeNodeFromComputeDomain removes the current node's entry from the ComputeDomain status.
 func (m *ComputeDomainManager) removeNodeFromComputeDomain(ctx context.Context) error {
-	cd, err := m.Get(m.config.computeDomainUUID)
+	// Patch with an empty object: instructs to delete all list items owned by
+	// the SSA field manager (which is precisely one:the item for this node, as
+	// identified by node name).
+	patchBytes, err := generatePatchForNodeInfo([]*nvapi.ComputeDomainNode{})
 	if err != nil {
-		return fmt.Errorf("error getting ComputeDomain from mutation cache: %w", err)
-	}
-	if cd == nil {
-		klog.Infof("No ComputeDomain object found in mutation cache during cleanup")
-		return nil
+		return fmt.Errorf("could not serialize patch: %w", err)
 	}
 
-	newCD := cd.DeepCopy()
-
-	// Filter out the node with the current pod's IP address
-	var updatedNodes []*nvapi.ComputeDomainNode
-	for _, node := range newCD.Status.Nodes {
-		if node.IPAddress != m.config.podIP {
-			updatedNodes = append(updatedNodes, node)
-		}
+	updatedCD, err := m.patchCD(ctx, patchBytes)
+	if err != nil {
+		return fmt.Errorf("error patching ComputeDomain status for node removal: %w", err)
 	}
 
-	// Exit early if no nodes were removed
-	if len(updatedNodes) == len(newCD.Status.Nodes) {
-		return nil
-	}
+	// Store the latest version of the object as returned by the API server in the mutation cache.
+	m.mutationCache.Mutation(updatedCD)
 
+	// TODO: figure out how to update the global CD status.
+	//
 	// If the number of nodes is now less than required, set status to NotReady
-	if len(updatedNodes) < newCD.Spec.NumNodes {
-		newCD.Status.Status = nvapi.ComputeDomainStatusNotReady
-	}
+	// if len(updatedNodes) < newCD.Spec.NumNodes {
+	// 	newCD.Status.Status = nvapi.ComputeDomainStatusNotReady
+	// }
 
-	// Update status and (upon success) store the latest version of the object
-	// (as returned by the API server) in the mutation cache.
-	newCD.Status.Nodes = updatedNodes
-	newCD, err = m.config.clientsets.Nvidia.ResourceV1beta1().ComputeDomains(newCD.Namespace).UpdateStatus(ctx, newCD, metav1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("error removing node from ComputeDomain status: %w", err)
-	}
-	m.mutationCache.Mutation(newCD)
-
-	klog.Infof("Successfully removed node with IP %s from ComputeDomain %s/%s", m.config.podIP, newCD.Namespace, newCD.Name)
+	klog.Infof("Successfully removed node with IP %s from ComputeDomain %s/%s", m.config.podIP, m.config.computeDomainNamespace, m.config.computeDomainName)
 	return nil
+}
+
+// Notes:
+//
+// 1) Field owner and field manager are referring to the same concept.
+// Specifically, `client.FieldOwner("foo")` (which is often shown in
+// documentation snippets) renders as `PatchOptions{FieldManager: "foo"}`.
+//
+// 2) In SSA documentation, one finds the `force: true` concept -- it can be
+// used to take ownership of fields that are currently owned by a different
+// field manager. This is not needed in our context.
+//
+// 3) We cannot get away with one shared owner/manager that is used across
+// nodes. SSA tracks field ownership at the field manager level, not at the
+// client/process level. When a field manager applies a patch with a list,
+// it's declaring the complete desired state for all entries that this field
+// manager owns. When multiple writers use the same field manager name, all
+// such writes are treated as coming from one logical actor. Notably, each
+// apply operation must include all fields that field manager owns. If node
+// A adds/updates entry "node-a" and node B adds/updates entry "node-b"
+// using the same field manager, SSA interprets the omission as intent to
+// delete those entries.
+func (m *ComputeDomainManager) patchCD(ctx context.Context, data []byte) (*nvapi.ComputeDomain, error) {
+	updatedCD, err := m.config.clientsets.Nvidia.ResourceV1beta1().ComputeDomains(m.config.computeDomainNamespace).Patch(
+		ctx,
+		m.config.computeDomainName,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{
+			FieldManager: fmt.Sprintf("cd-writer-%s", m.config.nodeName),
+		},
+		"status",
+	)
+	return updatedCD, err
 }
 
 func getIPSet(nodeInfos []*nvapi.ComputeDomainNode) IPSet {
@@ -438,4 +475,16 @@ func getIPSet(nodeInfos []*nvapi.ComputeDomainNode) IPSet {
 		set[n.IPAddress] = struct{}{}
 	}
 	return set
+}
+
+func generatePatchForNodeInfo(nodes []*nvapi.ComputeDomainNode) ([]byte, error) {
+	patch := map[string]interface{}{
+		"apiVersion": "resource.nvidia.com/v1beta1",
+		"kind":       "ComputeDomain",
+		"status": map[string]interface{}{
+			"nodes": nodes,
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	return patchBytes, err
 }

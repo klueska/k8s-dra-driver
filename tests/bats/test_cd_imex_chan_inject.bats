@@ -14,7 +14,6 @@ setup () {
   log_objects
 }
 
-
 @test "IMEX channel injection (single)" {
   log_objects
   apply_check_delete_workload_imex_chan_inject
