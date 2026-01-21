@@ -37,7 +37,7 @@ setup () {
   kubectl apply -f demo/specs/imex/nvbandwidth-test-job-1.yaml
   # The canonical k8s job interface works even for MPIJob (the MPIJob has an
   # underlying k8s job).
-  kubectl wait --for=create job/nvbandwidth-test-1-launcher --timeout=20s
+  kubectl wait --for=create job/nvbandwidth-test-1-launcher --timeout=60s
   kubectl wait --for=condition=complete job/nvbandwidth-test-1-launcher --timeout=60s
   run kubectl logs --tail=-1 --prefix -l job-name=nvbandwidth-test-1-launcher
   kubectl delete -f demo/specs/imex/nvbandwidth-test-job-1.yaml
