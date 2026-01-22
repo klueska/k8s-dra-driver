@@ -220,7 +220,12 @@ func (m *ComputeDomainManager) onAddOrUpdate(ctx context.Context, obj any) error
 		return nil
 	}
 
-	// Update node info in ComputeDomain, if required.
+	m.MaybePushNodesUpdate(cd)
+
+	// Update node info in ComputeDomain, if required. If this triggers an
+	// update of the API server object, rely on this callback to be called again
+	// (so that the above's `m.MaybePushNodesUpdate(cd)`) gets called after I
+	// inserted myself.
 	if err := m.EnsureNodeInfoInCD(ctx, cd); err != nil {
 		return fmt.Errorf("CD update: failed to insert/update node info in CD: %w", err)
 	}
@@ -239,13 +244,6 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 	// Create a deep copy of the ComputeDomain to avoid modifying the original
 	newCD := cd.DeepCopy()
 
-	// return updatedCD instead, and call MaybePushNodesUpdate() in the caller of this function.
-	defer func() {
-		if rerr == nil {
-			m.MaybePushNodesUpdate(newCD)
-		}
-	}()
-
 	// Try to find an existing entry for the current k8s node
 	for _, node := range newCD.Status.Nodes {
 		if node.Name == m.config.nodeName {
@@ -261,11 +259,11 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 	if mynode != nil {
 		for _, other := range newCD.Status.Nodes {
 			if other.CliqueID != m.config.cliqueID {
-				// Not my clique
+				// Not my clique.
 				continue
 			}
 			if other.Name == m.config.nodeName {
-				// This is me, I don't look at myself.
+				// This is me.
 				continue
 			}
 			if other.Index == mynode.Index {
@@ -299,10 +297,6 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 		}
 
 		klog.Infof("CD status does not contain node name '%s' yet, try to insert myself: %v", m.config.nodeName, mynode)
-
-		// This mutation is not used for patching the object, but in the
-		// deferred `MaybePushNodesUpdate()` to update the IMEX daemon config.
-		newCD.Status.Nodes = append(newCD.Status.Nodes, mynode)
 	}
 
 	// Unconditionally update its IP address. Note that the nodeInfo.IPAddress
