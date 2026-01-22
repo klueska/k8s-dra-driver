@@ -78,26 +78,6 @@ func NewDaemonSetPodManager(config *ManagerConfig, getComputeDomain GetComputeDo
 	return m
 }
 
-// updateComputeDomainNodes updates the ComputeDomain status with new nodes and handles status changes.
-func (m *DaemonSetPodManager) updateComputeDomainNodes(ctx context.Context, cd *nvapi.ComputeDomain, updatedNodes []*nvapi.ComputeDomainNode) error {
-	// If no nodes were removed, nothing to do
-	if len(updatedNodes) == len(cd.Status.Nodes) {
-		return nil
-	}
-
-	// If the number of nodes is now less than required, set status to NotReady
-	if len(updatedNodes) < cd.Spec.NumNodes {
-		cd.Status.Status = nvapi.ComputeDomainStatusNotReady
-	}
-
-	cd.Status.Nodes = updatedNodes
-	if _, err := m.config.clientsets.Nvidia.ResourceV1beta1().ComputeDomains(cd.Namespace).UpdateStatus(ctx, cd, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("error updating ComputeDomain status: %w", err)
-	}
-
-	return nil
-}
-
 func (m *DaemonSetPodManager) Start(ctx context.Context) (rerr error) {
 	ctx, cancel := context.WithCancel(ctx)
 	m.cancelContext = cancel
@@ -164,9 +144,15 @@ func (m *DaemonSetPodManager) onPodDelete(ctx context.Context, obj any) error {
 		}
 	}
 
-	// Update the ComputeDomain status
-	if err := m.updateComputeDomainNodes(ctx, newCD, updatedNodes); err != nil {
-		return fmt.Errorf("error removing node from ComputeDomain status: %w", err)
+	// If no nodes were removed, nothing to do
+	if len(updatedNodes) == len(cd.Status.Nodes) {
+		return nil
+	}
+
+	// Update the ComputeDomain status with the new list of nodes
+	newCD.Status.Nodes = updatedNodes
+	if _, err := m.updateComputeDomainStatus(ctx, newCD); err != nil {
+		return fmt.Errorf("error updating ComputeDomain status: %w", err)
 	}
 
 	klog.Infof("Successfully removed node with IP %s from ComputeDomain %s/%s", p.Status.PodIP, newCD.Namespace, newCD.Name)

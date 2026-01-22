@@ -292,6 +292,7 @@ func (m *ComputeDomainManager) onAddOrUpdate(ctx context.Context, obj any) error
 		return nil
 	}
 
+	// Add the finalizer.
 	if err := m.addFinalizer(ctx, cd); err != nil {
 		return fmt.Errorf("error adding finalizer: %w", err)
 	}
@@ -299,12 +300,31 @@ func (m *ComputeDomainManager) onAddOrUpdate(ctx context.Context, obj any) error
 	// Do not wait for the next periodic label cleanup to happen.
 	m.nodeManager.RemoveStaleComputeDomainLabelsAsync(ctx)
 
+	// Create the DaemonsetManager.
 	if _, err := m.daemonSetManager.Create(ctx, cd); err != nil {
 		return fmt.Errorf("error creating DaemonSet: %w", err)
 	}
 
+	// Create the ResourceClaimTemplateManager.
 	if _, err := m.resourceClaimTemplateManager.Create(ctx, cd.Namespace, cd.Spec.Channel.ResourceClaimTemplate.Name, cd); err != nil {
 		return fmt.Errorf("error creating ResourceClaimTemplate '%s/%s': %w", cd.Namespace, cd.Spec.Channel.ResourceClaimTemplate.Name, err)
+	}
+
+	// Change the global Status to reflect the number of ComputeDomain daemons connected.
+	switch cd.Status.Status {
+	case nvapi.ComputeDomainStatusNotReady:
+		if len(cd.Status.Nodes) < cd.Spec.NumNodes {
+			return nil
+		}
+		cd.Status.Status = nvapi.ComputeDomainStatusReady
+	case nvapi.ComputeDomainStatusReady:
+		if len(cd.Status.Nodes) >= cd.Spec.NumNodes {
+			return nil
+		}
+		cd.Status.Status = nvapi.ComputeDomainStatusNotReady
+	}
+	if _, err := m.UpdateStatus(ctx, cd); err != nil {
+		return fmt.Errorf("error updating ComputeDomain status: %w", err)
 	}
 
 	return nil
