@@ -266,11 +266,15 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 				continue
 			}
 			if other.Index == mynode.Index {
-				// random sleep?
-				time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
-				klog.V(4).Infof("EnsureNodeInfoInCD DNS index collision with %v -- regenerate my node info", other)
-				mynode = nil
-				break
+				klog.V(4).Infof("EnsureNodeInfoInCD DNS index collision with %v -- remove node info, later regenerate my node info", other)
+				//mynode = nil
+				// break
+				// m.removeNodeFromComputeDomain(ctx)
+				if err := m.removeNodeFromComputeDomain(ctx); err != nil {
+					klog.Warningf("Failed to remove node from ComputeDomain during shutdown: %v", err)
+				}
+
+				time.Sleep(time.Duration(rand.Intn(1500)) * time.Millisecond)
 			}
 		}
 	}
