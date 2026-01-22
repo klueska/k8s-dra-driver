@@ -251,10 +251,10 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 		}
 	}
 
-	// Detect DNS index collision -- if "our" index appears to be used
-	// elsewhere among nodes with the same cliqueID, re-generate our
-	// `ComputeDomainNode` object, once again calling getNextAvailableIndex().
-	// Iterate through nodes with my cliqueID, but not myself.
+	// Detect DNS index collision -- if my self-chosen DNS index appears to be
+	// used elsewhere (among the nodes with the same cliqueID), remove my
+	// `ComputeDomainNode` object from the CD.status.nodes list. Rely on one of
+	// the next calls into this function to make a better DNS index decision.
 	if mynode != nil {
 		for _, other := range newCD.Status.Nodes {
 			if other.CliqueID != m.config.cliqueID {
@@ -266,15 +266,15 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 				continue
 			}
 			if other.Index == mynode.Index {
-				klog.V(4).Infof("EnsureNodeInfoInCD DNS index collision with %v -- remove node info, later regenerate my node info", other)
-				//mynode = nil
-				// break
-				// m.removeNodeFromComputeDomain(ctx)
+				klog.V(4).Infof("EnsureNodeInfoInCD DNS index collision with %v -- remove myself from CD, later regenerate my node info", other)
+
 				if err := m.removeNodeFromComputeDomain(ctx); err != nil {
-					klog.Warningf("Failed to remove node from ComputeDomain during shutdown: %v", err)
+					klog.Warningf("Failed to remove node from ComputeDomain: %v", err)
 				}
 
-				time.Sleep(time.Duration(rand.Intn(1500)) * time.Millisecond)
+				// Towards resolving this conflict fast, introduce a bit of jitter.
+				time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+				return nil, fmt.Errorf("picked the same DNS index as another node")
 			}
 		}
 	}
@@ -404,8 +404,9 @@ func (m *ComputeDomainManager) MaybePushNodesUpdate(cd *nvapi.ComputeDomain) {
 		}
 	}
 
-	// Bail out if nodes list contains duplicate DNS indices
-	if HasDuplicateIndex(cd.Status.Nodes, m.config.cliqueID) {
+	// Do not update the IMEX daemon config if the current nodes list any
+	// contains duplicate DNS indices.
+	if m.HasDuplicateIndex(cd.Status.Nodes, m.config.cliqueID) {
 		return
 	}
 
@@ -417,7 +418,8 @@ func (m *ComputeDomainManager) MaybePushNodesUpdate(cd *nvapi.ComputeDomain) {
 	// the sense that if across config files the set is equal but the order is
 	// not: that may lead to an IMEX daemon startup error). Maybe we should
 	// perform a stable sort of IP addresses before writing them to the nodes
-	// config file.
+	// config file. Note/TODO: we probably want to limit this check to IP
+	// addresses relevant to _this_ clique.
 	if !maps.Equal(newIPs, previousIPs) {
 		klog.V(2).Infof("IP set changed")
 		// This log message gets large for large node numbers
@@ -517,26 +519,25 @@ func generatePatchForNodeInfo(nodes []*nvapi.ComputeDomainNode) ([]byte, error) 
 	return patchBytes, err
 }
 
-// HasDuplicateIndex iterates over the list of ComputeDomainNodes and returns
-// true if any Index appears more than once, in this clique.
-func HasDuplicateIndex(nodeInfos []*nvapi.ComputeDomainNode, cliqueID string) bool {
+// HasDuplicateIndex iterates over the list of ComputeDomainNodes (in this CD,
+// and in this clique), and returns true if any Index appears more than once.
+func (m *ComputeDomainManager) HasDuplicateIndex(nodeInfos []*nvapi.ComputeDomainNode, cliqueID string) bool {
 	seen := make(map[int]struct{})
 
 	for _, node := range nodeInfos {
+		// Ignore nodes in a different clique.
 		if node.CliqueID != cliqueID {
-			// Ignore nodes in a different clique.
 			continue
 		}
 
 		if _, exists := seen[node.Index]; exists {
-			klog.V(4).Infof("DNS index collision detected in %v", node)
+			klog.V(4).Infof("DNS index collision detected: %v uses an index seen before (we are node %v)", node, m.config.nodeName)
 			return true
 		}
 
-		// Mark as seen
+		// Mark as seen.
 		seen[node.Index] = struct{}{}
 	}
 
-	klog.V(4).Infof("No duplicate indices")
 	return false
 }
