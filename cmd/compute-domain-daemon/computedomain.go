@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -220,15 +221,16 @@ func (m *ComputeDomainManager) onAddOrUpdate(ctx context.Context, obj any) error
 		return nil
 	}
 
-	m.MaybePushNodesUpdate(cd)
-
 	// Update node info in ComputeDomain, if required. If this triggers an
 	// update of the API server object, rely on this callback to be called again
 	// (so that the above's `m.MaybePushNodesUpdate(cd)`) gets called after I
 	// inserted myself.
-	if err := m.EnsureNodeInfoInCD(ctx, cd); err != nil {
+	cd, err = m.EnsureNodeInfoInCD(ctx, cd)
+	if err != nil {
 		return fmt.Errorf("CD update: failed to insert/update node info in CD: %w", err)
 	}
+
+	m.MaybePushNodesUpdate(cd)
 
 	return nil
 }
@@ -238,7 +240,7 @@ func (m *ComputeDomainManager) onAddOrUpdate(ctx context.Context, obj any) error
 // reports the IP address of this current pod running the CD daemon. If mutation
 // is needed (first insertion, or IP address update) and successful, it reflects
 // the mutation in `m.mutationCache`.
-func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi.ComputeDomain) (rerr error) {
+func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi.ComputeDomain) (*nvapi.ComputeDomain, error) {
 	var mynode *nvapi.ComputeDomainNode
 
 	// Create a deep copy of the ComputeDomain to avoid modifying the original
@@ -268,8 +270,10 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 			}
 			if other.Index == mynode.Index {
 				// random sleep?
+				time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
 				klog.V(4).Infof("EnsureNodeInfoInCD DNS index collision with %v -- regenerate my node info", other)
 				mynode = nil
+				break
 			}
 		}
 	}
@@ -277,7 +281,7 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 	// If there is one and its IP is the same as this one, we are done
 	if mynode != nil && mynode.IPAddress == m.config.podIP {
 		klog.V(6).Infof("EnsureNodeInfoInCD noop: pod IP unchanged (%s)", m.config.podIP)
-		return nil
+		return newCD, nil
 	}
 
 	// Create new ComputeDomainNode object representing myself, and insert it into the nodes list.
@@ -285,7 +289,7 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 		// Get the next available index for this new node
 		nextIndex, err := getNextAvailableIndex(m.config.cliqueID, newCD.Status.Nodes, m.config.maxNodesPerIMEXDomain)
 		if err != nil {
-			return fmt.Errorf("error getting next available index: %w", err)
+			return nil, fmt.Errorf("error getting next available index: %w", err)
 		}
 
 		mynode = &nvapi.ComputeDomainNode{
@@ -320,19 +324,19 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 	// - The `apiVersion` and `kind`` fields are required in the patch payload.
 	patchBytes, err := generatePatchForNodeInfo([]*nvapi.ComputeDomainNode{mynode})
 	if err != nil {
-		return fmt.Errorf("could not serialize patch: %w", err)
+		return nil, fmt.Errorf("could not serialize patch: %w", err)
 	}
 
 	updatedCD, err := m.patchCD(ctx, patchBytes)
 	if err != nil {
-		return fmt.Errorf("error patching ComputeDomain status: %w", err)
+		return nil, fmt.Errorf("error patching ComputeDomain status: %w", err)
 	}
 
 	// Store the latest version of the object as returned by the API server in the mutation cache.
 	m.mutationCache.Mutation(updatedCD)
 	klog.Infof("Successfully inserted/updated node in CD (nodeinfo: %v)", mynode)
 
-	return nil
+	return updatedCD, nil
 }
 
 // The Index field in the Nodes section of the ComputeDomain status ensures a
