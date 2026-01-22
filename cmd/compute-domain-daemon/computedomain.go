@@ -234,11 +234,12 @@ func (m *ComputeDomainManager) onAddOrUpdate(ctx context.Context, obj any) error
 // is needed (first insertion, or IP address update) and successful, it reflects
 // the mutation in `m.mutationCache`.
 func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi.ComputeDomain) (rerr error) {
-	var nodeInfo *nvapi.ComputeDomainNode
+	var mynode *nvapi.ComputeDomainNode
 
 	// Create a deep copy of the ComputeDomain to avoid modifying the original
 	newCD := cd.DeepCopy()
 
+	// return updatedCD instead, and call MaybePushNodesUpdate() in the caller of this function.
 	defer func() {
 		if rerr == nil {
 			m.MaybePushNodesUpdate(newCD)
@@ -248,26 +249,48 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 	// Try to find an existing entry for the current k8s node
 	for _, node := range newCD.Status.Nodes {
 		if node.Name == m.config.nodeName {
-			nodeInfo = node
+			mynode = node
 			break
 		}
 	}
 
+	// Detect DNS index collision -- if "our" index appears to be used
+	// elsewhere among nodes with the same cliqueID, re-generate our
+	// `ComputeDomainNode` object, once again calling getNextAvailableIndex().
+	// Iterate through nodes with my cliqueID, but not myself.
+	if mynode != nil {
+		for _, other := range newCD.Status.Nodes {
+			if other.CliqueID != m.config.cliqueID {
+				// Not my clique
+				continue
+			}
+			if other.Name == m.config.nodeName {
+				// This is me, I don't look at myself.
+				continue
+			}
+			if other.Index == mynode.Index {
+				// random sleep?
+				klog.V(4).Infof("EnsureNodeInfoInCD DNS index collision with %v -- regenerate my node info", other)
+				mynode = nil
+			}
+		}
+	}
+
 	// If there is one and its IP is the same as this one, we are done
-	if nodeInfo != nil && nodeInfo.IPAddress == m.config.podIP {
+	if mynode != nil && mynode.IPAddress == m.config.podIP {
 		klog.V(6).Infof("EnsureNodeInfoInCD noop: pod IP unchanged (%s)", m.config.podIP)
 		return nil
 	}
 
-	// If there isn't one, create one and append it to the list
-	if nodeInfo == nil {
+	// Create new ComputeDomainNode object representing myself, and insert it into the nodes list.
+	if mynode == nil {
 		// Get the next available index for this new node
 		nextIndex, err := getNextAvailableIndex(m.config.cliqueID, newCD.Status.Nodes, m.config.maxNodesPerIMEXDomain)
 		if err != nil {
 			return fmt.Errorf("error getting next available index: %w", err)
 		}
 
-		nodeInfo = &nvapi.ComputeDomainNode{
+		mynode = &nvapi.ComputeDomainNode{
 			Name:     m.config.nodeName,
 			CliqueID: m.config.cliqueID,
 			Index:    nextIndex,
@@ -275,17 +298,17 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 			Status: nvapi.ComputeDomainStatusNotReady,
 		}
 
-		klog.Infof("CD status does not contain node name '%s' yet, try to insert myself: %v", m.config.nodeName, nodeInfo)
+		klog.Infof("CD status does not contain node name '%s' yet, try to insert myself: %v", m.config.nodeName, mynode)
 
 		// This mutation is not used for patching the object, but in the
 		// deferred `MaybePushNodesUpdate()` to update the IMEX daemon config.
-		newCD.Status.Nodes = append(newCD.Status.Nodes, nodeInfo)
+		newCD.Status.Nodes = append(newCD.Status.Nodes, mynode)
 	}
 
 	// Unconditionally update its IP address. Note that the nodeInfo.IPAddress
 	// as of now translates into a pod IP address and may therefore change
 	// across pod restarts.
-	nodeInfo.IPAddress = m.config.podIP
+	mynode.IPAddress = m.config.podIP
 
 	// TODO: figure out from where to update the global status Maybe do this in
 	// the controller instead? Or maybe do not do this anymore?
@@ -301,7 +324,7 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 	// - The `Patch()` method requires the patch itself to be provided as
 	//   byte sequence (as JSON document).
 	// - The `apiVersion` and `kind`` fields are required in the patch payload.
-	patchBytes, err := generatePatchForNodeInfo([]*nvapi.ComputeDomainNode{nodeInfo})
+	patchBytes, err := generatePatchForNodeInfo([]*nvapi.ComputeDomainNode{mynode})
 	if err != nil {
 		return fmt.Errorf("could not serialize patch: %w", err)
 	}
@@ -313,7 +336,8 @@ func (m *ComputeDomainManager) EnsureNodeInfoInCD(ctx context.Context, cd *nvapi
 
 	// Store the latest version of the object as returned by the API server in the mutation cache.
 	m.mutationCache.Mutation(updatedCD)
-	klog.Infof("Successfully inserted/updated node in CD (nodeinfo: %v)", nodeInfo)
+	klog.Infof("Successfully inserted/updated node in CD (nodeinfo: %v)", mynode)
+
 	return nil
 }
 
@@ -379,6 +403,11 @@ func (m *ComputeDomainManager) MaybePushNodesUpdate(cd *nvapi.ComputeDomain) {
 			klog.Infof("numNodes: %d, nodes seen: %d", cd.Spec.NumNodes, len(cd.Status.Nodes))
 			return
 		}
+	}
+
+	// Bail out if nodes list contains duplicate DNS indices
+	if HasDuplicateIndex(cd.Status.Nodes) {
+		return
 	}
 
 	newIPs := getIPSet(cd.Status.Nodes)
@@ -487,4 +516,22 @@ func generatePatchForNodeInfo(nodes []*nvapi.ComputeDomainNode) ([]byte, error) 
 	}
 	patchBytes, err := json.Marshal(patch)
 	return patchBytes, err
+}
+
+// HasDuplicateIndex iterates over the list of ComputeDomainNodes and returns
+// true if any Index appears more than once.
+func HasDuplicateIndex(nodeInfos []*nvapi.ComputeDomainNode) bool {
+	seen := make(map[int]struct{})
+
+	for _, node := range nodeInfos {
+		if _, exists := seen[node.Index]; exists {
+			klog.V(4).Infof("DNS index collision detected in %v", node)
+			return true
+		}
+		// Mark as seen
+		seen[node.Index] = struct{}{}
+	}
+
+	klog.V(4).Infof("No duplicate indices")
+	return false
 }
