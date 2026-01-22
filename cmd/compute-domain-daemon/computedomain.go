@@ -221,10 +221,7 @@ func (m *ComputeDomainManager) onAddOrUpdate(ctx context.Context, obj any) error
 		return nil
 	}
 
-	// Update node info in ComputeDomain, if required. If this triggers an
-	// update of the API server object, rely on this callback to be called again
-	// (so that the above's `m.MaybePushNodesUpdate(cd)`) gets called after I
-	// inserted myself.
+	// Update node info in ComputeDomain, if required.
 	cd, err = m.EnsureNodeInfoInCD(ctx, cd)
 	if err != nil {
 		return fmt.Errorf("CD update: failed to insert/update node info in CD: %w", err)
@@ -404,7 +401,7 @@ func (m *ComputeDomainManager) MaybePushNodesUpdate(cd *nvapi.ComputeDomain) {
 	}
 
 	// Bail out if nodes list contains duplicate DNS indices
-	if HasDuplicateIndex(cd.Status.Nodes) {
+	if HasDuplicateIndex(cd.Status.Nodes, m.config.cliqueID) {
 		return
 	}
 
@@ -517,15 +514,21 @@ func generatePatchForNodeInfo(nodes []*nvapi.ComputeDomainNode) ([]byte, error) 
 }
 
 // HasDuplicateIndex iterates over the list of ComputeDomainNodes and returns
-// true if any Index appears more than once.
-func HasDuplicateIndex(nodeInfos []*nvapi.ComputeDomainNode) bool {
+// true if any Index appears more than once, in this clique.
+func HasDuplicateIndex(nodeInfos []*nvapi.ComputeDomainNode, cliqueID string) bool {
 	seen := make(map[int]struct{})
 
 	for _, node := range nodeInfos {
+		if node.CliqueID != cliqueID {
+			// Ignore nodes in a different clique.
+			continue
+		}
+
 		if _, exists := seen[node.Index]; exists {
 			klog.V(4).Infof("DNS index collision detected in %v", node)
 			return true
 		}
+
 		// Mark as seen
 		seen[node.Index] = struct{}{}
 	}
